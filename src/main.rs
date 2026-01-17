@@ -25,7 +25,7 @@ use notifier::Notifier;
 use scheduler::Scheduler;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::registry()
@@ -67,20 +67,19 @@ async fn main() -> Result<()> {
     // Spawn resource monitoring task
     let resource_metrics = metrics.clone();
     tokio::spawn(async move {
-        // Only refresh process-specific information to keep overhead low
-        let mut sys = sysinfo::System::new();
-        let pid = sysinfo::Pid::from_u32(std::process::id());
+        let mut cpu_tracker = CpuTracker::new();
 
         loop {
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-            if let Some(process) = sys.process(pid) {
-                resource_metrics
-                    .process_cpu_usage
-                    .set(process.cpu_usage() as f64);
-                resource_metrics
-                    .process_memory_bytes
-                    .set(process.memory() as f64);
+            // Update Memory (RSS)
+            if let Ok(bytes) = read_memory_rss() {
+                resource_metrics.process_memory_bytes.set(bytes as f64);
             }
+
+            // Update CPU Usage
+            if let Ok(usage) = read_cpu_usage(&mut cpu_tracker) {
+                resource_metrics.process_cpu_usage.set(usage);
+            }
+
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         }
     });
@@ -92,7 +91,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Wait for either task to complete (they shouldn't unless there's an error)
+    // Wait for either task to complete
     tokio::select! {
         _ = scheduler_handle => {
             tracing::error!("Scheduler task exited unexpectedly");
@@ -103,4 +102,82 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// --- Resource Monitoring Helpers (Linux /proc) ---
+
+fn read_memory_rss() -> Result<u64> {
+    let content = std::fs::read_to_string("/proc/self/status")?;
+    for line in content.lines() {
+        if line.starts_with("VmRSS:") {
+            // Example: VmRSS:    5632 kB
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let kb: u64 = parts[1].parse()?;
+                return Ok(kb * 1024); // Convert kB to bytes
+            }
+        }
+    }
+    Ok(0)
+}
+
+struct CpuTracker {
+    last_proc_ticks: u64,
+    last_sys_ticks: u64,
+}
+
+impl CpuTracker {
+    fn new() -> Self {
+        Self {
+            last_proc_ticks: 0,
+            last_sys_ticks: 0,
+        }
+    }
+}
+
+fn read_cpu_usage(tracker: &mut CpuTracker) -> Result<f64> {
+    // 1. Read process ticks from /proc/self/stat
+    // Format: pid... utime(13) stime(14)
+    let stat_content = std::fs::read_to_string("/proc/self/stat")?;
+    let close_paren_idx = stat_content
+        .rfind(')')
+        .ok_or_else(|| anyhow::anyhow!("Invalid stat fmt"))?;
+    let after_paren = &stat_content[close_paren_idx + 1..];
+    let parts: Vec<&str> = after_paren.split_whitespace().collect();
+
+    // utime is index 11 (13-2), stime is index 12 (14-2) relative to parts after ')'
+    if parts.len() < 13 {
+        return Ok(0.0);
+    }
+    let utime: u64 = parts[11].parse()?;
+    let stime: u64 = parts[12].parse()?;
+    let current_proc_ticks = utime + stime;
+
+    // 2. Read system ticks from /proc/stat
+    let sys_content = std::fs::read_to_string("/proc/stat")?;
+    let first_line = sys_content
+        .lines()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Empty /proc/stat"))?;
+    // skip "cpu"
+    let sys_parts: Vec<&str> = first_line.split_whitespace().skip(1).collect();
+    let mut current_sys_ticks = 0;
+    for part in sys_parts {
+        current_sys_ticks += part.parse::<u64>().unwrap_or(0);
+    }
+
+    // 3. Calculate Delta
+    let delta_proc = current_proc_ticks.saturating_sub(tracker.last_proc_ticks);
+    let delta_sys = current_sys_ticks.saturating_sub(tracker.last_sys_ticks);
+
+    tracker.last_proc_ticks = current_proc_ticks;
+    tracker.last_sys_ticks = current_sys_ticks;
+
+    if delta_sys == 0 {
+        return Ok(0.0);
+    }
+
+    // Percentage = (proc_delta / sys_delta) * 100
+    // Units (jiffies) cancel out, so no need for CLK_TCK
+    Ok((delta_proc as f64 / delta_sys as f64) * 100.0)
 }

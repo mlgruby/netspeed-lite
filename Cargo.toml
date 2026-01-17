@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.49", features = ["full"] }
+tokio = { version = "1.49", default-features = false, features = ["macros", "rt", "net", "signal", "process", "time", "sync", "io-util"] }
 
 # HTTP server
 axum = "0.8"
@@ -43,9 +43,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Error handling
 anyhow = "1.0"
 thiserror = "2.0"
-
-# System info
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
 [profile.release]
 opt-level = 3
