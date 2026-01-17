@@ -1,0 +1,45 @@
+{
+  "type": "result",
+  "download": {
+    "bandwidth": 101537500,
+    "bytes": 127171875,
+    "elapsed": 10002,
+    "latency": {
+      "iqm": 18.234,
+      "low": 17.891,
+      "high": 19.123,
+      "jitter": 2.145
+    }
+  },
+  "upload": {
+    "bandwidth": 5262500,
+    "bytes": 6578125,
+    "elapsed": 10001,
+    "latency": {
+      "iqm": 19.456,
+      "low": 18.234,
+      "high": 21.789,
+      "jitter": 3.012
+    }
+  },
+  "ping": {
+    "jitter": 2.1,
+    "latency": 18.4,
+    "low": 17.8,
+    "high": 19.2
+  },
+  "server": {
+    "id": 12345,
+    "host": "speedtest.example.com",
+    "port": 8080,
+    "name": "Example Speedtest Server",
+    "location": "Brussels",
+    "country": "Belgium",
+    "ip": "192.0.2.1"
+  },
+  "result": {
+    "id": "abcd1234-5678-90ef-ghij-klmnopqrstuv",
+    "url": "https://www.speedtest.net/result/c/abcd1234-5678-90ef-ghij-klmnopqrstuv",
+    "persisted": true
+  }
+}
