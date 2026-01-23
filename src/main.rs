@@ -87,9 +87,15 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start HTTP server
+    // Start HTTP server (pass notifier for Alertmanager webhook endpoint)
+    let server_notifier = config
+        .ntfy
+        .clone()
+        .map(|ntfy_config| Notifier::new(ntfy_config, metrics.clone()));
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server::serve(config.server.bind_address.clone(), metrics).await {
+        if let Err(e) =
+            server::serve(config.server.bind_address.clone(), metrics, server_notifier).await
+        {
             tracing::error!("Server error: {}", e);
         }
     });

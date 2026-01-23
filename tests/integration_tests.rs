@@ -9,7 +9,8 @@ async fn test_server_starts_and_responds() {
     env::set_var("PROMETHEUS_REGISTRY_PREFIX", "test_integration_server");
     let metrics = Metrics::new().expect("Failed to create metrics");
     let bind_address = "127.0.0.1:19109".to_string();
-    let server_handle = tokio::spawn(async move { server::serve(bind_address, metrics).await });
+    let server_handle =
+        tokio::spawn(async move { server::serve(bind_address, metrics, None).await });
     sleep(Duration::from_millis(100)).await;
 
     // When: Making requests to root endpoint
@@ -81,7 +82,8 @@ async fn test_health_check_states() {
     let metrics = Metrics::new().expect("Failed to create metrics");
     let bind_address = "127.0.0.1:19110".to_string();
     let test_metrics = metrics.clone();
-    let server_handle = tokio::spawn(async move { server::serve(bind_address, metrics).await });
+    let server_handle =
+        tokio::spawn(async move { server::serve(bind_address, metrics, None).await });
     sleep(Duration::from_millis(100)).await;
 
     // When: Checking health before any runs
@@ -131,7 +133,8 @@ async fn test_metrics_content_type() {
     env::set_var("PROMETHEUS_REGISTRY_PREFIX", "test_content_type");
     let metrics = Metrics::new().expect("Failed to create metrics");
     let bind_address = "127.0.0.1:19111".to_string();
-    let server_handle = tokio::spawn(async move { server::serve(bind_address, metrics).await });
+    let server_handle =
+        tokio::spawn(async move { server::serve(bind_address, metrics, None).await });
     sleep(Duration::from_millis(100)).await;
 
     // When: Requesting metrics endpoint
@@ -158,7 +161,8 @@ async fn test_concurrent_requests() {
     env::set_var("PROMETHEUS_REGISTRY_PREFIX", "test_concurrent");
     let metrics = Metrics::new().expect("Failed to create metrics");
     let bind_address = "127.0.0.1:19112".to_string();
-    let server_handle = tokio::spawn(async move { server::serve(bind_address, metrics).await });
+    let server_handle =
+        tokio::spawn(async move { server::serve(bind_address, metrics, None).await });
     sleep(Duration::from_millis(100)).await;
 
     // When: Making 10 concurrent requests to metrics endpoint
