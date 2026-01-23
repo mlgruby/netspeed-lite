@@ -8,14 +8,46 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
-    Router,
+    Json, Router,
 };
+use serde::Serialize;
 
 #[derive(Clone)]
 struct AppState {
     metrics: Metrics,
 }
 
+/// Starts the HTTP server for exposing metrics and health endpoints.
+///
+/// This function creates an Axum router with the following routes:
+/// - `GET /`: HTML landing page with links to endpoints
+/// - `GET /metrics`: Prometheus metrics in text format
+/// - `GET /healthz`: JSON health check status
+///
+/// The server runs indefinitely until an error occurs or it's shut down.
+///
+/// # Arguments
+///
+/// * `bind_address` - Address to bind the server to (e.g., "0.0.0.0:9109")
+/// * `metrics` - Metrics instance to expose via the `/metrics` endpoint
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the server shuts down gracefully, or `Err` if:
+/// - The bind address is invalid or already in use
+/// - A critical server error occurs
+///
+/// # Examples
+///
+/// ```no_run
+/// use netspeed_lite::metrics::Metrics;
+/// use netspeed_lite::server;
+///
+/// # async {
+/// let metrics = Metrics::new().unwrap();
+/// server::serve("127.0.0.1:9109".to_string(), metrics).await.unwrap();
+/// # };
+/// ```
 pub async fn serve(bind_address: String, metrics: Metrics) -> anyhow::Result<()> {
     let state = AppState { metrics };
 
@@ -82,8 +114,38 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn health_handler(State(_state): State<AppState>) -> Response {
-    // Simple health check - just return 200 OK
-    // Could be extended to check last run timestamp, etc.
-    (StatusCode::OK, "OK").into_response()
+#[derive(Serialize)]
+struct HealthStatus {
+    status: String,
+    last_run_timestamp: f64,
+    last_success_timestamp: f64,
+}
+
+async fn health_handler(State(state): State<AppState>) -> Response {
+    let last_run = state.metrics.run_timestamp_seconds.get();
+    let last_success = state.metrics.last_success.get();
+
+    // Determine status based on whether we've had a successful run
+    let status = if last_success > 0.0 {
+        "healthy"
+    } else if last_run > 0.0 {
+        "unhealthy"
+    } else {
+        "initializing"
+    };
+
+    let health = HealthStatus {
+        status: status.to_string(),
+        last_run_timestamp: last_run,
+        last_success_timestamp: if last_success > 0.0 { last_run } else { 0.0 },
+    };
+
+    // Return 503 if never successfully run or last run failed
+    let status_code = if status == "healthy" {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (status_code, Json(health)).into_response()
 }
