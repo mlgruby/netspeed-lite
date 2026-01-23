@@ -66,21 +66,24 @@ async fn main() -> Result<()> {
 
     // Spawn resource monitoring task
     let resource_metrics = metrics.clone();
-    tokio::spawn(async move {
+    let resource_interval = config.resource_interval_seconds;
+    let resource_handle = tokio::spawn(async move {
         let mut cpu_tracker = CpuTracker::new();
 
         loop {
             // Update Memory (RSS)
-            if let Ok(bytes) = read_memory_rss() {
-                resource_metrics.process_memory_bytes.set(bytes as f64);
+            match read_memory_rss().await {
+                Ok(bytes) => resource_metrics.process_memory_bytes.set(bytes as f64),
+                Err(e) => tracing::warn!("Failed to read memory RSS: {}", e),
             }
 
             // Update CPU Usage
-            if let Ok(usage) = read_cpu_usage(&mut cpu_tracker) {
-                resource_metrics.process_cpu_usage.set(usage);
+            match read_cpu_usage(&mut cpu_tracker).await {
+                Ok(usage) => resource_metrics.process_cpu_usage.set(usage),
+                Err(e) => tracing::warn!("Failed to read CPU usage: {}", e),
             }
 
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(resource_interval)).await;
         }
     });
 
@@ -91,13 +94,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Wait for either task to complete
+    // Wait for any task to complete
     tokio::select! {
         _ = scheduler_handle => {
             tracing::error!("Scheduler task exited unexpectedly");
         }
         _ = server_handle => {
             tracing::error!("Server task exited unexpectedly");
+        }
+        _ = resource_handle => {
+            tracing::error!("Resource monitor task exited unexpectedly");
         }
     }
 
@@ -106,14 +112,30 @@ async fn main() -> Result<()> {
 
 // --- Resource Monitoring Helpers (Linux /proc) ---
 
-fn read_memory_rss() -> Result<u64> {
-    let content = std::fs::read_to_string("/proc/self/status")?;
+/// Reads the process's Resident Set Size (RSS) memory usage from `/proc/self/status`.
+///
+/// This function parses the `VmRSS` field from the Linux proc filesystem,
+/// which represents the amount of physical memory currently in use by the process.
+///
+/// # Returns
+///
+/// Returns `Ok(u64)` with memory usage in bytes, or `Err` if:
+/// - The `/proc/self/status` file cannot be read (non-Linux systems)
+/// - The `VmRSS` field is not found
+/// - The value cannot be parsed
+///
+/// Returns `Ok(0)` if the file is read but VmRSS is not found.
+///
+/// # Platform Support
+///
+/// This function only works on Linux. On other platforms, it will return an error.
+async fn read_memory_rss() -> Result<u64> {
+    let content = tokio::fs::read_to_string("/proc/self/status").await?;
     for line in content.lines() {
         if line.starts_with("VmRSS:") {
             // Example: VmRSS:    5632 kB
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let kb: u64 = parts[1].parse()?;
+            if let Some(kb_str) = line.split_whitespace().nth(1) {
+                let kb: u64 = kb_str.parse()?;
                 return Ok(kb * 1024); // Convert kB to bytes
             }
         }
@@ -121,12 +143,16 @@ fn read_memory_rss() -> Result<u64> {
     Ok(0)
 }
 
+/// Tracks CPU usage state between measurements.
+///
+/// This struct stores the previous tick counts to calculate CPU usage delta.
 struct CpuTracker {
     last_proc_ticks: u64,
     last_sys_ticks: u64,
 }
 
 impl CpuTracker {
+    /// Creates a new CpuTracker with initial tick counts of 0.
     fn new() -> Self {
         Self {
             last_proc_ticks: 0,
@@ -135,36 +161,68 @@ impl CpuTracker {
     }
 }
 
-fn read_cpu_usage(tracker: &mut CpuTracker) -> Result<f64> {
+/// Reads the process's CPU usage percentage from `/proc/self/stat` and `/proc/stat`.
+///
+/// This function calculates CPU usage by:
+/// 1. Reading process CPU ticks (utime + stime) from `/proc/self/stat`
+/// 2. Reading total system CPU ticks from `/proc/stat`
+/// 3. Computing the delta since the last measurement
+/// 4. Calculating percentage: (process_delta / system_delta) * 100
+///
+/// # Arguments
+///
+/// * `tracker` - Mutable reference to CpuTracker storing previous tick counts
+///
+/// # Returns
+///
+/// Returns `Ok(f64)` with CPU usage percentage (0.0 to 100.0+), or `Err` if:
+/// - The proc files cannot be read (non-Linux systems)
+/// - The file format is invalid
+/// - Values cannot be parsed
+///
+/// Returns `Ok(0.0)` if this is the first measurement (no delta available) or
+/// if the system delta is 0.
+///
+/// # Platform Support
+///
+/// This function only works on Linux. On other platforms, it will return an error.
+///
+/// # Note
+///
+/// CPU usage can exceed 100% on multi-core systems if the process uses multiple cores.
+async fn read_cpu_usage(tracker: &mut CpuTracker) -> Result<f64> {
     // 1. Read process ticks from /proc/self/stat
     // Format: pid... utime(13) stime(14)
-    let stat_content = std::fs::read_to_string("/proc/self/stat")?;
+    let stat_content = tokio::fs::read_to_string("/proc/self/stat").await?;
     let close_paren_idx = stat_content
         .rfind(')')
         .ok_or_else(|| anyhow::anyhow!("Invalid stat fmt"))?;
     let after_paren = &stat_content[close_paren_idx + 1..];
-    let parts: Vec<&str> = after_paren.split_whitespace().collect();
 
     // utime is index 11 (13-2), stime is index 12 (14-2) relative to parts after ')'
-    if parts.len() < 13 {
-        return Ok(0.0);
-    }
-    let utime: u64 = parts[11].parse()?;
-    let stime: u64 = parts[12].parse()?;
+    let mut parts = after_paren.split_whitespace();
+    let utime: u64 = parts
+        .nth(11)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse utime"))?;
+    let stime: u64 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse stime"))?;
     let current_proc_ticks = utime + stime;
 
     // 2. Read system ticks from /proc/stat
-    let sys_content = std::fs::read_to_string("/proc/stat")?;
+    let sys_content = tokio::fs::read_to_string("/proc/stat").await?;
     let first_line = sys_content
         .lines()
         .next()
         .ok_or_else(|| anyhow::anyhow!("Empty /proc/stat"))?;
-    // skip "cpu"
-    let sys_parts: Vec<&str> = first_line.split_whitespace().skip(1).collect();
-    let mut current_sys_ticks = 0;
-    for part in sys_parts {
-        current_sys_ticks += part.parse::<u64>().unwrap_or(0);
-    }
+    // skip "cpu" and sum all tick values
+    let current_sys_ticks: u64 = first_line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|s| s.parse::<u64>().ok())
+        .sum();
 
     // 3. Calculate Delta
     let delta_proc = current_proc_ticks.saturating_sub(tracker.last_proc_ticks);

@@ -73,6 +73,34 @@ pub struct RunResult {
     pub duration: Duration,
 }
 
+/// Executes a speedtest command and returns the result.
+///
+/// This function spawns the speedtest process, waits for it to complete (with timeout),
+/// captures its output, parses the JSON result, and returns structured data.
+///
+/// # Arguments
+///
+/// * `command` - The command to execute (e.g., "speedtest")
+/// * `args` - Command-line arguments to pass to the command
+/// * `timeout_seconds` - Maximum time to wait for the command to complete
+///
+/// # Returns
+///
+/// Returns a `RunResult` containing:
+/// - `outcome`: Either `Success(SpeedtestResult)` with parsed metrics, or `Failure(ErrorCategory)` with error details
+/// - `duration`: How long the command took to execute
+///
+/// # Examples
+///
+/// ```no_run
+/// use netspeed_lite::runner::run_speedtest;
+///
+/// # async {
+/// let args = vec!["--format=json".to_string(), "--accept-license".to_string()];
+/// let result = run_speedtest("speedtest", &args, 120).await;
+/// println!("Test duration: {:?}", result.duration);
+/// # };
+/// ```
 pub async fn run_speedtest(command: &str, args: &[String], timeout_seconds: u64) -> RunResult {
     let start = Instant::now();
 
@@ -120,6 +148,46 @@ async fn execute_speedtest(
     parse_speedtest_output(&stdout)
 }
 
+/// Parses Ookla Speedtest CLI JSON output into a `SpeedtestResult`.
+///
+/// This function expects JSON output from the Ookla Speedtest CLI with the following structure:
+/// ```json
+/// {
+///   "download": {"bandwidth": 101537500},
+///   "upload": {"bandwidth": 5262500},
+///   "ping": {"latency": 18.4, "jitter": 2.1}
+/// }
+/// ```
+///
+/// The function performs unit conversions:
+/// - Bandwidth: bytes/second → bits/second (multiply by 8)
+/// - Latency/Jitter: milliseconds → seconds (divide by 1000)
+///
+/// # Arguments
+///
+/// * `json_str` - JSON string output from the speedtest command
+///
+/// # Returns
+///
+/// Returns `Ok(SpeedtestResult)` if parsing succeeds, or `Err(ErrorCategory)` if:
+/// - JSON is malformed (`InvalidOutput`)
+/// - Required fields are missing (`MissingFields`)
+/// - Values are invalid (negative or NaN) (`InvalidOutput`)
+///
+/// # Examples
+///
+/// ```
+/// use netspeed_lite::runner::parse_speedtest_output;
+///
+/// let json = r#"{
+///     "download": {"bandwidth": 101537500},
+///     "upload": {"bandwidth": 5262500},
+///     "ping": {"latency": 18.4, "jitter": 2.1}
+/// }"#;
+///
+/// let result = parse_speedtest_output(json).unwrap();
+/// assert_eq!(result.download_bps, 812300000.0);
+/// ```
 pub fn parse_speedtest_output(json_str: &str) -> Result<SpeedtestResult, ErrorCategory> {
     let output: SpeedtestOutput = serde_json::from_str(json_str)
         .map_err(|e| ErrorCategory::InvalidOutput(format!("JSON parse error: {}", e)))?;
