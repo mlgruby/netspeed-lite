@@ -3,18 +3,21 @@
 //! This module defines the Axum HTTP server that exposes the `/metrics` endpoint.
 //! It serves the Prometheus metrics registry to be scraped by a Prometheus instance.
 use crate::metrics::Metrics;
+use crate::notifier::Notifier;
 use axum::{
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Clone)]
 struct AppState {
     metrics: Metrics,
+    notifier: Option<Notifier>,
 }
 
 /// Starts the HTTP server for exposing metrics and health endpoints.
@@ -23,6 +26,7 @@ struct AppState {
 /// - `GET /`: HTML landing page with links to endpoints
 /// - `GET /metrics`: Prometheus metrics in text format
 /// - `GET /healthz`: JSON health check status
+/// - `POST /alertmanager`: Webhook endpoint for Alertmanager notifications
 ///
 /// The server runs indefinitely until an error occurs or it's shut down.
 ///
@@ -30,6 +34,7 @@ struct AppState {
 ///
 /// * `bind_address` - Address to bind the server to (e.g., "0.0.0.0:9109")
 /// * `metrics` - Metrics instance to expose via the `/metrics` endpoint
+/// * `notifier` - Optional notifier for sending Alertmanager webhooks to ntfy
 ///
 /// # Returns
 ///
@@ -45,16 +50,21 @@ struct AppState {
 ///
 /// # async {
 /// let metrics = Metrics::new().unwrap();
-/// server::serve("127.0.0.1:9109".to_string(), metrics).await.unwrap();
+/// server::serve("127.0.0.1:9109".to_string(), metrics, None).await.unwrap();
 /// # };
 /// ```
-pub async fn serve(bind_address: String, metrics: Metrics) -> anyhow::Result<()> {
-    let state = AppState { metrics };
+pub async fn serve(
+    bind_address: String,
+    metrics: Metrics,
+    notifier: Option<Notifier>,
+) -> anyhow::Result<()> {
+    let state = AppState { metrics, notifier };
 
     let app = Router::new()
         .route("/", get(root_handler))
         .route("/metrics", get(metrics_handler))
         .route("/healthz", get(health_handler))
+        .route("/alertmanager", post(alertmanager_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
@@ -88,6 +98,9 @@ async fn root_handler() -> Html<&'static str> {
             </div>
             <div class="endpoint">
                 <strong>Health:</strong> <a href="/healthz">/healthz</a>
+            </div>
+            <div class="endpoint">
+                <strong>Alertmanager Webhook:</strong> POST /alertmanager
             </div>
         </body>
         </html>
@@ -148,4 +161,153 @@ async fn health_handler(State(state): State<AppState>) -> Response {
     };
 
     (status_code, Json(health)).into_response()
+}
+
+// Alertmanager webhook structs
+#[derive(Debug, Deserialize)]
+struct AlertmanagerWebhook {
+    status: String,
+    #[serde(rename = "commonLabels")]
+    common_labels: HashMap<String, String>,
+    #[serde(rename = "commonAnnotations")]
+    common_annotations: HashMap<String, String>,
+    alerts: Vec<Alert>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Alert {
+    #[serde(rename = "startsAt")]
+    starts_at: String,
+    #[serde(rename = "endsAt")]
+    ends_at: String,
+}
+
+async fn alertmanager_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<AlertmanagerWebhook>,
+) -> Response {
+    // Check if notifier is configured
+    let Some(notifier) = &state.notifier else {
+        tracing::warn!("Alertmanager webhook received but notifier not configured");
+        return (StatusCode::SERVICE_UNAVAILABLE, "Notifier not configured").into_response();
+    };
+
+    // Format the alert message
+    let (title, message) = format_alertmanager_message(&payload);
+
+    // Send notification
+    let result = send_alertmanager_notification(notifier, &title, &message, &payload).await;
+
+    match result {
+        Ok(_) => {
+            tracing::info!("Alertmanager notification sent: {}", title);
+            (StatusCode::OK, "OK").into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to send Alertmanager notification: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to send notification",
+            )
+                .into_response()
+        }
+    }
+}
+
+fn format_alertmanager_message(webhook: &AlertmanagerWebhook) -> (String, String) {
+    // Determine emoji based on status
+    let emoji = if webhook.status == "firing" {
+        "🔴"
+    } else {
+        "✅"
+    };
+
+    // Get alert details
+    let alert_name = webhook
+        .common_labels
+        .get("alertname")
+        .cloned()
+        .unwrap_or_else(|| "Unknown Alert".to_string());
+
+    let instance = webhook.common_labels.get("instance").cloned();
+
+    // Build title
+    let title = format!("{} {}", emoji, alert_name);
+
+    // Build message body
+    let mut lines = Vec::new();
+
+    // Add summary if available
+    if let Some(summary) = webhook.common_annotations.get("summary") {
+        lines.push(format!("📋 {}", summary));
+    }
+
+    // Add description if available
+    if let Some(description) = webhook.common_annotations.get("description") {
+        if !lines.is_empty() {
+            lines.push(String::new()); // Empty line
+        }
+        lines.push(description.clone());
+    }
+
+    // Add instance info
+    if let Some(inst) = instance {
+        lines.push(String::new());
+        lines.push(format!("🖥️ Instance: {}", inst));
+    }
+
+    // Add timing information from first alert
+    if let Some(alert) = webhook.alerts.first() {
+        lines.push(String::new());
+
+        // Parse and format start time
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&alert.starts_at) {
+            lines.push(format!("⏰ Started: {}", dt.format("%Y-%m-%d %H:%M:%S %Z")));
+        }
+
+        // Add end time if resolved
+        if webhook.status == "resolved" {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&alert.ends_at) {
+                lines.push(format!("⏱️ Ended: {}", dt.format("%Y-%m-%d %H:%M:%S %Z")));
+            }
+        }
+    }
+
+    // Add alert count if multiple
+    if webhook.alerts.len() > 1 {
+        lines.push(String::new());
+        lines.push(format!("🔢 {} alerts in this group", webhook.alerts.len()));
+    }
+
+    let message = lines.join("\n");
+
+    (title, message)
+}
+
+async fn send_alertmanager_notification(
+    notifier: &Notifier,
+    title: &str,
+    message: &str,
+    webhook: &AlertmanagerWebhook,
+) -> anyhow::Result<()> {
+    // Determine priority based on severity
+    let severity = webhook
+        .common_labels
+        .get("severity")
+        .map(|s| s.as_str())
+        .unwrap_or("info");
+
+    let priority = match severity {
+        "critical" => 5,
+        "warning" => 4,
+        _ => 3,
+    };
+
+    // Build tags
+    let tags = format!("prometheus,alert,{}", severity);
+
+    // Send via notifier's HTTP client
+    notifier
+        .send_custom_notification(title, message, priority, &tags)
+        .await
 }

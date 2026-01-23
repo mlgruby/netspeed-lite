@@ -11,6 +11,7 @@ use crate::runner::{ErrorCategory, RunOutcome, SpeedtestResult};
 use anyhow::Result;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct Notifier {
     config: NtfyConfig,
     metrics: Metrics,
@@ -158,6 +159,52 @@ impl Notifier {
 
         // Send the message as body
         request = request.body(message);
+
+        let response = request.send().await?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("ntfy returned status: {}", response.status());
+        }
+
+        Ok(())
+    }
+
+    /// Sends a custom notification with specified title, message, priority, and tags.
+    ///
+    /// This is used for sending Alertmanager webhook notifications to ntfy.
+    ///
+    /// # Arguments
+    ///
+    /// * `title` - Notification title
+    /// * `message` - Notification message body
+    /// * `priority` - Priority level (1-5)
+    /// * `tags` - Comma-separated tags
+    pub async fn send_custom_notification(
+        &self,
+        title: &str,
+        message: &str,
+        priority: u8,
+        tags: &str,
+    ) -> Result<()> {
+        let mut request = self.client.post(&self.config.url);
+
+        // Add authentication if configured
+        if let Some(token) = &self.config.token {
+            request = request.header("Authorization", format!("Bearer {}", token));
+        }
+
+        // Add ntfy headers
+        request = request
+            .header("Title", title)
+            .header("Tags", tags)
+            .header("Priority", priority.to_string());
+
+        if let Some(click_url) = &self.config.click_url {
+            request = request.header("Click", click_url);
+        }
+
+        // Send the message as body
+        request = request.body(message.to_string());
 
         let response = request.send().await?;
 
