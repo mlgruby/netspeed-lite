@@ -27,6 +27,25 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    /// Creates a new Scheduler instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Application configuration including schedule settings
+    /// * `metrics` - Metrics instance for tracking test runs
+    /// * `notifier` - Optional notifier for sending notifications
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use netspeed_lite::config::Config;
+    /// use netspeed_lite::metrics::Metrics;
+    /// use netspeed_lite::scheduler::Scheduler;
+    ///
+    /// let config = Config::from_env().unwrap();
+    /// let metrics = Metrics::new().unwrap();
+    /// let scheduler = Scheduler::new(config, metrics, None);
+    /// ```
     pub fn new(config: Config, metrics: Metrics, notifier: Option<Notifier>) -> Self {
         Self {
             config,
@@ -36,6 +55,36 @@ impl Scheduler {
         }
     }
 
+    /// Runs the scheduler loop indefinitely.
+    ///
+    /// This function:
+    /// 1. Calculates the next run time based on the configured schedule mode
+    /// 2. Sleeps until that time
+    /// 3. Checks for overlap (if configured to prevent it)
+    /// 4. Executes the speedtest
+    /// 5. Updates metrics and sends notifications
+    /// 6. Repeats
+    ///
+    /// The loop runs forever and should be spawned as a tokio task.
+    ///
+    /// # Schedule Modes
+    ///
+    /// - **HourlyAligned**: Runs at the top of each hour (e.g., 13:00, 14:00)
+    /// - **Interval**: Runs every N seconds from the last run
+    /// - **Cron**: Runs according to a cron expression
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use netspeed_lite::scheduler::Scheduler;
+    ///
+    /// # async {
+    /// # let scheduler: Scheduler = unimplemented!();
+    /// tokio::spawn(async move {
+    ///     scheduler.run().await;
+    /// });
+    /// # };
+    /// ```
     pub async fn run(&self) {
         tracing::info!("Starting scheduler in {:?} mode", self.config.schedule.mode);
 
@@ -144,6 +193,49 @@ impl Scheduler {
         Utc::now() + Duration::seconds(self.config.schedule.interval_seconds as i64)
     }
 
+    fn update_success_metrics(
+        &self,
+        result: &crate::runner::SpeedtestResult,
+        duration: std::time::Duration,
+    ) {
+        let timestamp = Utc::now().timestamp() as f64;
+        self.metrics.run_timestamp_seconds.set(timestamp);
+        self.metrics
+            .run_duration_seconds
+            .set(duration.as_secs_f64());
+        self.metrics.last_success.set(1.0);
+        self.metrics
+            .runs_total
+            .with_label_values(&["success"])
+            .inc();
+
+        // Update measurement metrics
+        self.metrics.download_bps.set(result.download_bps);
+        self.metrics.upload_bps.set(result.upload_bps);
+        self.metrics.latency_seconds.set(result.latency_seconds);
+
+        if let Some(jitter) = result.jitter_seconds {
+            self.metrics.jitter_seconds.set(jitter);
+        }
+
+        if let Some(loss) = result.packet_loss_ratio {
+            self.metrics.packet_loss_ratio.set(loss);
+        }
+    }
+
+    fn update_failure_metrics(&self, duration: std::time::Duration) {
+        let timestamp = Utc::now().timestamp() as f64;
+        self.metrics.run_timestamp_seconds.set(timestamp);
+        self.metrics
+            .run_duration_seconds
+            .set(duration.as_secs_f64());
+        self.metrics.last_success.set(0.0);
+        self.metrics
+            .runs_total
+            .with_label_values(&["failure"])
+            .inc();
+    }
+
     async fn execute_run(&self) {
         self.run_in_progress.store(true, Ordering::SeqCst);
 
@@ -160,13 +252,7 @@ impl Scheduler {
         let duration = result.duration;
         let outcome = result.outcome;
 
-        // Update metrics
-        let timestamp = Utc::now().timestamp() as f64;
-        self.metrics.run_timestamp_seconds.set(timestamp);
-        self.metrics
-            .run_duration_seconds
-            .set(duration.as_secs_f64());
-
+        // Update metrics and send notifications
         match &outcome {
             RunOutcome::Success(speedtest_result) => {
                 tracing::info!(
@@ -178,26 +264,7 @@ impl Scheduler {
                     "Speed test completed successfully"
                 );
 
-                self.metrics.last_success.set(1.0);
-                self.metrics
-                    .runs_total
-                    .with_label_values(&["success"])
-                    .inc();
-
-                // Update measurement metrics
-                self.metrics.download_bps.set(speedtest_result.download_bps);
-                self.metrics.upload_bps.set(speedtest_result.upload_bps);
-                self.metrics
-                    .latency_seconds
-                    .set(speedtest_result.latency_seconds);
-
-                if let Some(jitter) = speedtest_result.jitter_seconds {
-                    self.metrics.jitter_seconds.set(jitter);
-                }
-
-                if let Some(loss) = speedtest_result.packet_loss_ratio {
-                    self.metrics.packet_loss_ratio.set(loss);
-                }
+                self.update_success_metrics(speedtest_result, duration);
 
                 // Send notification if configured
                 if let Some(notifier) = &self.notifier {
@@ -214,11 +281,7 @@ impl Scheduler {
                     "Speed test failed"
                 );
 
-                self.metrics.last_success.set(0.0);
-                self.metrics
-                    .runs_total
-                    .with_label_values(&["failure"])
-                    .inc();
+                self.update_failure_metrics(duration);
 
                 // Send notification if configured
                 if let Some(notifier) = &self.notifier {

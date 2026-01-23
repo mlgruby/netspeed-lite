@@ -20,6 +20,7 @@ pub struct Config {
     pub speedtest: SpeedtestConfig,
     pub ntfy: Option<NtfyConfig>,
     pub notify_on: NotifyOn,
+    pub resource_interval_seconds: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +68,42 @@ pub struct NotifyOn {
 }
 
 impl Config {
+    /// Loads configuration from environment variables.
+    ///
+    /// # Environment Variables
+    ///
+    /// - `NETSPEED_BIND`: Server bind address (default: "0.0.0.0:9109")
+    /// - `NETSPEED_SCHEDULE_MODE`: Schedule mode - "hourly_aligned", "interval", or "cron" (default: "hourly_aligned")
+    /// - `NETSPEED_INTERVAL_SECONDS`: Interval between runs in seconds (default: 3600)
+    /// - `NETSPEED_SCHEDULE`: Cron expression for cron mode
+    /// - `NETSPEED_TIMEZONE`: Timezone for scheduling (default: "Europe/Brussels")
+    /// - `NETSPEED_ALLOW_OVERLAP`: Allow overlapping test runs (default: false)
+    /// - `NETSPEED_TIMEOUT_SECONDS`: Speedtest command timeout (default: 120)
+    /// - `NETSPEED_NTFY_URL`: ntfy.sh notification URL (optional)
+    /// - `NETSPEED_NTFY_TOKEN`: ntfy.sh authentication token (optional)
+    /// - `NETSPEED_NTFY_TITLE`: Notification title (default: "netspeed-lite")
+    /// - `NETSPEED_NTFY_TAGS`: Notification tags (default: "speedtest,isp")
+    /// - `NETSPEED_NTFY_PRIORITY`: Notification priority 1-5 (default: 3)
+    /// - `NETSPEED_NTFY_CLICK`: Click URL for notifications (optional)
+    /// - `NETSPEED_NOTIFY_ON`: When to notify - "success", "failure", or "success,failure" (default: "success,failure")
+    /// - `NETSPEED_RESOURCE_INTERVAL_SECONDS`: Resource monitoring interval (default: 15)
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Config)` if all required variables are valid, or `Err` if:
+    /// - Timezone is invalid
+    /// - Timeout is 0
+    /// - Schedule mode is invalid
+    /// - Any numeric value cannot be parsed
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use netspeed_lite::config::Config;
+    ///
+    /// let config = Config::from_env().expect("Failed to load config");
+    /// println!("Bind address: {}", config.server.bind_address);
+    /// ```
     pub fn from_env() -> Result<Self> {
         let bind_address = env::var("NETSPEED_BIND").unwrap_or_else(|_| "0.0.0.0:9109".to_string());
 
@@ -139,6 +176,11 @@ impl Config {
             failure: notify_on_str.contains("failure"),
         };
 
+        let resource_interval_seconds = env::var("NETSPEED_RESOURCE_INTERVAL_SECONDS")
+            .unwrap_or_else(|_| "15".to_string())
+            .parse()
+            .context("Invalid NETSPEED_RESOURCE_INTERVAL_SECONDS")?;
+
         Ok(Config {
             server: ServerConfig { bind_address },
             schedule: ScheduleConfig {
@@ -155,6 +197,7 @@ impl Config {
             },
             ntfy,
             notify_on,
+            resource_interval_seconds,
         })
     }
 }
