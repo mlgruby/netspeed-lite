@@ -1,6 +1,6 @@
 [package]
 name = "netspeed-lite"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Satya"]
 description = "ISP speed monitor with Prometheus metrics and ntfy notifications"
