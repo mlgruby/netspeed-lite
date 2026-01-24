@@ -72,9 +72,9 @@ jobs:
       - name: Create release archive
         run: |
           mkdir -p release
-          cp target/release/pbs-exporter release/
+          cp target/release/netspeed-lite release/
           cp README.md LICENSE release/
-          tar -czf pbs-exporter-linux-amd64.tar.gz -C release .
+          tar -czf netspeed-lite-linux-amd64.tar.gz -C release .
 
 
 
@@ -83,9 +83,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            pbs-exporter-linux-amd64.tar.gz
+            netspeed-lite-linux-amd64.tar.gz
           body: |
-            ## PBS Exporter ${{ steps.version.outputs.version }}
+            ## Netspeed Lite ${{ steps.version.outputs.version }}
             
             ### Docker Image
             ```bash
@@ -97,18 +97,15 @@ jobs:
             **Using Docker:**
             ```bash
             docker run -d \
-              --name pbs-exporter \
+              --name netspeed-lite \
               -p 9101:9101 \
-              -e PBS_EXPORTER__PBS__ENDPOINT=https://your-pbs:8007 \
-              -e PBS_EXPORTER__PBS__TOKEN_ID=your-token-id \
-              -e PBS_EXPORTER__PBS__TOKEN_SECRET=your-token-secret \
               ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
             ```
-            
+
             **Using Binary:**
             ```bash
-            tar -xzf pbs-exporter-linux-amd64.tar.gz
-            ./pbs-exporter
+            tar -xzf netspeed-lite-linux-amd64.tar.gz
+            ./netspeed-lite
             ```
             
             ### What's Changed
