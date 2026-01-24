@@ -20,17 +20,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Extract version from Cargo.toml
         id: version
         run: |
@@ -52,39 +52,40 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix={{branch}}-
-      
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-      
+
       - name: Build release binary
         run: cargo build --release
-      
+
       - name: Create release archive
         run: |
           mkdir -p release
-          cp target/release/netspeed-lite release/
-          cp README.md release/
-          tar -czf netspeed-lite-linux-amd64.tar.gz -C release .
-      
+          cp target/release/pbs-exporter release/
+          cp README.md LICENSE release/
+          tar -czf pbs-exporter-linux-amd64.tar.gz -C release .
+
+
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            netspeed-lite-linux-amd64.tar.gz
+            pbs-exporter-linux-amd64.tar.gz
           body: |
-            ## NetSpeed-Lite ${{ steps.version.outputs.version }}
+            ## PBS Exporter ${{ steps.version.outputs.version }}
             
             ### Docker Image
             ```bash
@@ -96,21 +97,22 @@ jobs:
             **Using Docker:**
             ```bash
             docker run -d \
-              --name netspeed-lite \
-              -p 9109:9109 \
-              --env-file .env \
+              --name pbs-exporter \
+              -p 9101:9101 \
+              -e PBS_EXPORTER__PBS__ENDPOINT=https://your-pbs:8007 \
+              -e PBS_EXPORTER__PBS__TOKEN_ID=your-token-id \
+              -e PBS_EXPORTER__PBS__TOKEN_SECRET=your-token-secret \
               ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
             ```
             
             **Using Binary:**
             ```bash
-            tar -xzf netspeed-lite-linux-amd64.tar.gz
-            ./netspeed-lite
+            tar -xzf pbs-exporter-linux-amd64.tar.gz
+            ./pbs-exporter
             ```
             
-            ### Configuration
-            
-            See [README.md](https://github.com/${{ github.repository }}/blob/main/README.md) for configuration options.
+            ### What's Changed
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           draft: false
           prerelease: false
         env:

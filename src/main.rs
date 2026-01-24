@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
 ///
 /// This function only works on Linux. On other platforms, it will return an error.
 async fn read_memory_rss() -> Result<u64> {
-    let content = tokio::fs::read_to_string("/proc/self/status").await?;
+    let content = std::fs::read_to_string("/proc/self/status")?;
     for line in content.lines() {
         if line.starts_with("VmRSS:") {
             // Example: VmRSS:    5632 kB
@@ -193,7 +193,7 @@ impl CpuTracker {
 async fn read_cpu_usage(tracker: &mut CpuTracker) -> Result<f64> {
     // 1. Read process ticks from /proc/self/stat
     // Format: pid... utime(13) stime(14)
-    let stat_content = tokio::fs::read_to_string("/proc/self/stat").await?;
+    let stat_content = std::fs::read_to_string("/proc/self/stat")?;
     let close_paren_idx = stat_content
         .rfind(')')
         .ok_or_else(|| anyhow::anyhow!("Invalid stat fmt"))?;
@@ -212,7 +212,7 @@ async fn read_cpu_usage(tracker: &mut CpuTracker) -> Result<f64> {
     let current_proc_ticks = utime + stime;
 
     // 2. Read system ticks from /proc/stat
-    let sys_content = tokio::fs::read_to_string("/proc/stat").await?;
+    let sys_content = std::fs::read_to_string("/proc/stat")?;
     let first_line = sys_content
         .lines()
         .next()
