@@ -96,12 +96,12 @@ jobs:
         with:
           context: .
           push: false
-          tags: pbs-exporter:test
+          tags: netspeed-lite:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Check image size
         run: |
-          SIZE=$(docker images pbs-exporter:test --format "{{.Size}}")
+          SIZE=$(docker images netspeed-lite:test --format "{{.Size}}")
           echo "✓ Docker image built successfully"
           echo "Image size: $SIZE"
