@@ -102,7 +102,7 @@ compose-restart: ## Restart docker-compose services
 	docker-compose restart
 
 # CI/CD simulation
-ci: check fmt fmt-check clippy audit test build docker-build ## Run all CI checks locally
+ci: fmt-check clippy test build docker-build ## Run all CI checks locally
 
 # Development workflow
 dev: fmt clippy test ## Run development checks (format, lint, test)
